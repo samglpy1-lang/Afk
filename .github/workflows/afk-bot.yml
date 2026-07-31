@@ -31,32 +31,37 @@ jobs:
             logErrors: true
           });
           
-          // PATCH: Fix keepalive challenge mismatch
-          bot.on('login', () => {
+          // COMPLETE KEEPALIVE OVERRIDE
+          bot.once('login', () => {
+            // Remove all existing keepalive handlers
+            bot._client.removeAllListeners('keep_alive');
+            
+            // Add our own handler
             bot._client.on('keep_alive', (packet) => {
+              // Send the EXACT same ID back
               bot._client.write('keep_alive', {
                 keepAliveId: packet.keepAliveId
               });
+              console.log('💓 Keepalive responded:', packet.keepAliveId);
             });
           });
           
+          // Disable mineflayer's internal keepalive timer
+          bot.once('spawn', () => {
+            if (bot._client.keepAlive) {
+              clearInterval(bot._client.keepAlive);
+              bot._client.keepAlive = null;
+            }
+            console.log('✅ Bot spawned! Internal keepalive disabled.');
+          });
+          
           bot.on('spawn', () => {
-            console.log('✅ Bot spawned successfully!');
+            console.log('✅ Bot active!');
             
-            // Anti-AFK: jump, move, and look around
             setInterval(() => {
-              // Jump
               bot.setControlState('jump', true);
               setTimeout(() => bot.setControlState('jump', false), 200);
-              
-              // Random look
               bot.look(Math.random() * Math.PI * 2, 0);
-              
-              // Move forward/backward occasionally
-              if (Math.random() > 0.7) {
-                bot.setControlState('forward', true);
-                setTimeout(() => bot.setControlState('forward', false), 1000);
-              }
             }, 5000);
           });
           
@@ -68,9 +73,8 @@ jobs:
             console.log('Error:', err.message);
           });
           
-          // Keep bot running for 9.5 minutes (cron runs every 10)
           setTimeout(() => {
-            console.log('⏰ Bot shutting down gracefully...');
+            console.log('⏰ Shutting down...');
             process.exit(0);
           }, 570000);
           "
