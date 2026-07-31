@@ -21,155 +21,285 @@ jobs:
           node -e "
           const mineflayer = require('mineflayer');
           
+          // === CONFIGURATION ===
+          const VERSIONS = ['1.20.4', '1.20.2', '1.19.4', '1.19.2', '1.18.2'];
+          const SESSION_MIN = 120000;   // 2 minutes
+          const SESSION_MAX = 840000;   // 14 minutes
+          const TIMEOUT = 60000;        // 1 minute
+          const RECONNECT_MIN = 5000;   // 5 seconds
+          const RECONNECT_MAX = 65000;  // 65 seconds
+          
+          // === GENERATE BOT NAME ===
           const randomNum = Math.floor(Math.random() * 9999) + 1;
           const botName = 'BTT' + randomNum;
           console.log('🎭 Bot name:', botName);
           
-          const sessionMs = 120000 + Math.floor(Math.random() * 720000);
+          // === RANDOM SESSION PARAMETERS ===
+          const sessionMs = SESSION_MIN + Math.floor(Math.random() * (SESSION_MAX - SESSION_MIN));
           const disconnectCount = 1 + Math.floor(Math.random() * 3);
           console.log('⏳ Session:', Math.round(sessionMs/60000), 'min,', disconnectCount, 'disconnects');
           
+          // === STATE ===
           let bot = null;
           let active = true;
+          let spawned = false;
           let reconnectTimer = null;
           let isDisconnecting = false;
+          let moveInterval = null;
+          let sessionTimer = null;
+          let disconnectTimer = null;
+          let currentVersion = VERSIONS[0];
+          let versionIndex = 0;
           
+          // === CLEANUP FUNCTION ===
+          function cleanup() {
+            if (moveInterval) {
+              clearInterval(moveInterval);
+              moveInterval = null;
+            }
+            if (reconnectTimer) {
+              clearTimeout(reconnectTimer);
+              reconnectTimer = null;
+            }
+            if (sessionTimer) {
+              clearTimeout(sessionTimer);
+              sessionTimer = null;
+            }
+            if (disconnectTimer) {
+              clearTimeout(disconnectTimer);
+              disconnectTimer = null;
+            }
+            if (bot) {
+              try { bot.end(); } catch (e) {}
+              bot = null;
+            }
+            spawned = false;
+            isDisconnecting = false;
+          }
+          
+          // === CREATE BOT ===
           function createBot() {
             if (!active) return;
+            cleanup();
             
-            console.log('🔄 Connecting as', botName, '...');
+            console.log('🔄 Connecting as', botName, '(version:', currentVersion, ')...');
+            spawned = false;
             
-            bot = mineflayer.createBot({
-              host: '${{ secrets.SERVER_IP }}',
-              port: 25565,
-              username: botName,
-              version: '1.20.4',
-              auth: 'offline',
-              checkTimeoutInterval: 300000,
-              logErrors: true
-            });
-            
-            bot.once('login', () => {
-              bot._client.removeAllListeners('keep_alive');
-              bot._client.on('keep_alive', (packet) => {
-                bot._client.write('keep_alive', {
-                  keepAliveId: packet.keepAliveId
-                });
+            try {
+              bot = mineflayer.createBot({
+                host: '${{ secrets.SERVER_IP }}',
+                port: 25565,
+                username: botName,
+                version: currentVersion,
+                auth: 'offline',
+                checkTimeoutInterval: TIMEOUT,
+                logErrors: true,
+                hideErrors: false
               });
+            } catch (e) {
+              console.log('❌ Failed to create bot:', e.message);
+              scheduleReconnect();
+              return;
+            }
+            
+            // === RESOURCE PACK HANDLER ===
+            bot.on('resourcePack', (packet) => {
+              try {
+                bot.denyResourcePack();
+                console.log('📦 Resource pack denied.');
+              } catch (e) {}
             });
             
-            bot.once('spawn', () => {
-              if (bot && bot._client && bot._client.keepAlive) {
-                clearInterval(bot._client.keepAlive);
-                bot._client.keepAlive = null;
+            // === KEEPALIVE FIX ===
+            bot.once('login', () => {
+              try {
+                bot._client.removeAllListeners('keep_alive');
+                bot._client.on('keep_alive', (packet) => {
+                  try {
+                    bot._client.write('keep_alive', {
+                      keepAliveId: packet.keepAliveId
+                    });
+                  } catch (e) {
+                    console.log('⚠️ Keepalive write error:', e.message);
+                  }
+                });
+                console.log('💓 Keepalive handler installed');
+              } catch (e) {
+                console.log('⚠️ Keepalive setup error:', e.message);
               }
+            });
+            
+            // === DISABLE INTERNAL KEEPALIVE ===
+            bot.once('spawn', () => {
+              spawned = true;
+              try {
+                if (bot && bot._client && bot._client.keepAlive) {
+                  clearInterval(bot._client.keepAlive);
+                  bot._client.keepAlive = null;
+                }
+              } catch (e) {}
               console.log('✅', botName, 'spawned!');
             });
             
+            // === MOVEMENT LOGIC ===
             bot.on('spawn', () => {
               console.log('✅', botName, 'active!');
               
-              let moveInterval = setInterval(() => {
-                if (!active || !bot || isDisconnecting) return;
-                
-                const action = Math.random();
-                
-                if (action < 0.15) {
+              if (moveInterval) {
+                clearInterval(moveInterval);
+                moveInterval = null;
+              }
+              
+              moveInterval = setInterval(() => {
+                // Safety checks
+                if (!active || !bot || isDisconnecting || !spawned) return;
+                if (!bot.entity || !bot.entity.id || !bot.entity.position) {
                   return;
-                } else if (action < 0.30) {
-                  bot.setControlState('jump', true);
-                  setTimeout(() => {
-                    if (bot) bot.setControlState('jump', false);
-                  }, 150 + Math.random() * 350);
-                } else if (action < 0.45) {
-                  bot.setControlState('forward', true);
-                  setTimeout(() => {
-                    if (bot) bot.setControlState('forward', false);
-                  }, 800 + Math.random() * 2500);
-                } else if (action < 0.55) {
-                  bot.setControlState('back', true);
-                  setTimeout(() => {
-                    if (bot) bot.setControlState('back', false);
-                  }, 800 + Math.random() * 2000);
-                } else if (action < 0.65) {
-                  bot.setControlState('sneak', true);
-                  setTimeout(() => {
-                    if (bot) bot.setControlState('sneak', false);
-                  }, 1200 + Math.random() * 2000);
-                } else if (action < 0.75) {
-                  if (Math.random() > 0.5) {
-                    bot.setControlState('left', true);
+                }
+                
+                try {
+                  const action = Math.random();
+                  
+                  if (action < 0.15) {
+                    // Idle pause
+                    return;
+                  } else if (action < 0.30) {
+                    bot.setControlState('jump', true);
                     setTimeout(() => {
-                      if (bot) bot.setControlState('left', false);
-                    }, 400 + Math.random() * 1200);
+                      if (bot && spawned) bot.setControlState('jump', false);
+                    }, 150 + Math.random() * 350);
+                  } else if (action < 0.45) {
+                    bot.setControlState('forward', true);
+                    setTimeout(() => {
+                      if (bot && spawned) bot.setControlState('forward', false);
+                    }, 800 + Math.random() * 2500);
+                  } else if (action < 0.55) {
+                    bot.setControlState('back', true);
+                    setTimeout(() => {
+                      if (bot && spawned) bot.setControlState('back', false);
+                    }, 800 + Math.random() * 2000);
+                  } else if (action < 0.65) {
+                    bot.setControlState('sneak', true);
+                    setTimeout(() => {
+                      if (bot && spawned) bot.setControlState('sneak', false);
+                    }, 1200 + Math.random() * 2000);
+                  } else if (action < 0.75) {
+                    if (Math.random() > 0.5) {
+                      bot.setControlState('left', true);
+                      setTimeout(() => {
+                        if (bot && spawned) bot.setControlState('left', false);
+                      }, 400 + Math.random() * 1200);
+                    } else {
+                      bot.setControlState('right', true);
+                      setTimeout(() => {
+                        if (bot && spawned) bot.setControlState('right', false);
+                      }, 400 + Math.random() * 1200);
+                    }
                   } else {
-                    bot.setControlState('right', true);
-                    setTimeout(() => {
-                      if (bot) bot.setControlState('right', false);
-                    }, 400 + Math.random() * 1200);
+                    bot.look(
+                      Math.random() * Math.PI * 2,
+                      (Math.random() - 0.5) * 0.6
+                    );
                   }
-                } else {
-                  bot.look(
-                    Math.random() * Math.PI * 2,
-                    (Math.random() - 0.5) * 0.6
-                  );
+                } catch (e) {
+                  // Silent ignore movement errors
                 }
               }, 4000 + Math.random() * 8000);
-              
-              bot._moveInterval = moveInterval;
             });
             
-            bot.on('end', (reason) => {
-              console.log('❌', botName, 'disconnected:', reason);
-              if (bot && bot._moveInterval) {
-                clearInterval(bot._moveInterval);
-                bot._moveInterval = null;
-              }
-              if (active && !reconnectTimer) {
-                const delay = 5000 + Math.random() * 60000;
-                console.log('🔄 Reconnecting in', Math.round(delay/1000), 's...');
-                reconnectTimer = setTimeout(() => {
-                  reconnectTimer = null;
-                  if (active) createBot();
-                }, delay);
-              }
-            });
-            
+            // === ERROR HANDLING ===
             bot.on('error', (err) => {
-              if (err.message.includes('ECONNREFUSED')) {
-                console.log('⚠️ Server offline, will retry...');
-              } else {
-                console.log('Error:', err.message);
+              const msg = err.message || '';
+              
+              if (msg.includes('ECONNREFUSED') || msg.includes('connect')) {
+                console.log('⚠️ Server offline — will retry');
+              } else if (msg.includes('timeout') || msg.includes('Timed out')) {
+                console.log('⏰ Connection timeout — retrying');
+              } else if (msg.includes('Invalid version') || msg.includes('protocol')) {
+                console.log('🔄 Version mismatch, trying next version...');
+                versionIndex++;
+                if (versionIndex < VERSIONS.length) {
+                  currentVersion = VERSIONS[versionIndex];
+                  console.log('🔄 Trying version:', currentVersion);
+                  scheduleReconnect();
+                } else {
+                  console.log('❌ All versions failed. Giving up.');
+                  active = false;
+                }
+              } else if (!msg.includes('ECONNRESET') && !msg.includes('abort')) {
+                console.log('❌ Error:', msg);
+              }
+            });
+            
+            // === DISCONNECT HANDLING ===
+            bot.on('end', (reason) => {
+              console.log('❌', botName, 'disconnected:', reason || 'unknown');
+              spawned = false;
+              
+              if (moveInterval) {
+                clearInterval(moveInterval);
+                moveInterval = null;
+              }
+              
+              if (active && !reconnectTimer && !isDisconnecting) {
+                scheduleReconnect();
               }
             });
           }
           
-          createBot();
+          // === RECONNECT SCHEDULER ===
+          function scheduleReconnect() {
+            if (!active || reconnectTimer) return;
+            
+            const delay = RECONNECT_MIN + Math.random() * (RECONNECT_MAX - RECONNECT_MIN);
+            console.log('🔄 Reconnecting in', Math.round(delay/1000), 's...');
+            
+            reconnectTimer = setTimeout(() => {
+              reconnectTimer = null;
+              if (active) createBot();
+            }, delay);
+          }
           
+          // === RANDOM DISCONNECT SCHEDULER ===
           let disconnectionsDone = 0;
           
           function scheduleRandomDisconnect() {
             if (!active || disconnectionsDone >= disconnectCount) return;
+            if (disconnectTimer) {
+              clearTimeout(disconnectTimer);
+              disconnectTimer = null;
+            }
             
-            const waitMs = 120000 + Math.floor(Math.random() * 720000);
+            const waitMs = SESSION_MIN + Math.floor(Math.random() * (SESSION_MAX - SESSION_MIN));
             console.log('⏳ Next random disconnect in', Math.round(waitMs/60000), 'min');
             
-            setTimeout(() => {
-              if (!active || !bot || disconnectionsDone >= disconnectCount || isDisconnecting) return;
+            disconnectTimer = setTimeout(() => {
+              disconnectTimer = null;
               
-              if (Math.random() < 0.75) {
+              if (!active || !bot || disconnectionsDone >= disconnectCount || isDisconnecting) {
+                scheduleRandomDisconnect();
+                return;
+              }
+              
+              // 70% chance to disconnect
+              if (Math.random() < 0.70) {
                 disconnectionsDone++;
                 isDisconnecting = true;
                 console.log('🔌 Random disconnect (', disconnectionsDone, '/', disconnectCount, ')');
                 
-                if (bot) {
-                  bot.end();
-                  bot = null;
-                }
+                spawned = false;
+                try {
+                  if (bot) {
+                    bot.end();
+                    bot = null;
+                  }
+                } catch (e) {}
                 
-                const reconnectDelay = 8000 + Math.random() * 52000;
+                const reconnectDelay = RECONNECT_MIN + Math.random() * (RECONNECT_MAX - RECONNECT_MIN);
                 console.log('🔄 Reconnecting in', Math.round(reconnectDelay/1000), 's...');
-                setTimeout(() => {
+                
+                reconnectTimer = setTimeout(() => {
+                  reconnectTimer = null;
                   isDisconnecting = false;
                   if (active) createBot();
                 }, reconnectDelay);
@@ -182,19 +312,30 @@ jobs:
             }, waitMs);
           }
           
+          // === START ===
+          createBot();
           scheduleRandomDisconnect();
           
-          setTimeout(() => {
+          // === SESSION TIMER ===
+          sessionTimer = setTimeout(() => {
             console.log('⏰ Session ending. Shutting down...');
             active = false;
-            if (bot) {
-              bot.end();
-              bot = null;
-            }
-            if (reconnectTimer) {
-              clearTimeout(reconnectTimer);
-              reconnectTimer = null;
-            }
+            cleanup();
             process.exit(0);
           }, sessionMs);
+          
+          // === GRACEFUL SHUTDOWN ===
+          process.on('SIGINT', () => {
+            console.log('🛑 Received SIGINT. Shutting down...');
+            active = false;
+            cleanup();
+            process.exit(0);
+          });
+          
+          process.on('SIGTERM', () => {
+            console.log('🛑 Received SIGTERM. Shutting down...');
+            active = false;
+            cleanup();
+            process.exit(0);
+          });
           "
