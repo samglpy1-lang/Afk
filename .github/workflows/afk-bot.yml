@@ -1,38 +1,31 @@
-name: AFK Bot
-on:
-  schedule:
-    - cron: '*/5 * * * *'
-  workflow_dispatch:
+const mineflayer = require('mineflayer');
 
-jobs:
-  run-bot:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-js: '18'
-      
-      - name: Install mineflayer
-        run: npm install mineflayer
-        
-      - name: Run AFK bot
-        run: |
-          node -e "
-          const mineflayer = require('mineflayer');
-          const bot = mineflayer.createBot({
-            host: '${{ secrets.SERVER_IP }}',
-            port: 25565,
-            username: '${{ secrets.BOT_USERNAME }}',
-            version: '1.19.4'
-          });
-          
-          bot.on('spawn', () => {
-            setInterval(() => {
-              bot.setControlState('jump', true);
-              setTimeout(() => bot.setControlState('jump', false), 200);
-            }, 30000);
-          });
-          
-          setTimeout(() => process.exit(), 300000);
-          "
+const bot = mineflayer.createBot({
+    host: '${{ secrets.SERVER_IP }}',
+    port: 25565,
+    username: '${{ secrets.BOT_USERNAME }}',
+    version: '1.20.4',          // Change to match your server
+    auth: 'offline',
+    checkTimeoutInterval: 300000,
+    keepAlive: true,            // Explicitly enable keepalive
+    logErrors: true
+});
+
+bot.on('spawn', () => {
+    console.log('✅ Bot spawned!');
+    setInterval(() => {
+        bot.setControlState('jump', true);
+        setTimeout(() => bot.setControlState('jump', false), 200);
+        bot.look(Math.random() * Math.PI * 2, 0);
+    }, 5000);
+});
+
+bot.on('end', (reason) => {
+    console.log('❌ Disconnected:', reason);
+});
+
+bot.on('error', (err) => {
+    console.log('Error:', err.message);
+});
+
+setTimeout(() => process.exit(), 540000);
