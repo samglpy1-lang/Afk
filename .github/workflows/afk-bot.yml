@@ -1,22 +1,12 @@
 name: AFK Bot
 on:
   schedule:
-    - cron: '*/5 * * * *'   # Every 5 minutes (faster reconnects)
+    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 jobs:
-  keepalive-job:
-    name: Keepalive Workflow
-    runs-on: ubuntu-latest
-    permissions:
-      actions: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: gautamkrishnar/keepalive-workflow@v2
-
   run-bot:
     runs-on: ubuntu-latest
-    needs: keepalive-job
     steps:
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -31,12 +21,10 @@ jobs:
           node -e "
           const mineflayer = require('mineflayer');
           
-          // Random name: BTT + number
           const randomNum = Math.floor(Math.random() * 9999) + 1;
           const botName = 'BTT' + randomNum;
           console.log('🎭 Bot name:', botName);
           
-          // Session: 2-14 minutes
           const sessionMs = 120000 + Math.floor(Math.random() * 720000);
           const disconnectCount = 1 + Math.floor(Math.random() * 3);
           console.log('⏳ Session:', Math.round(sessionMs/60000), 'min,', disconnectCount, 'disconnects');
