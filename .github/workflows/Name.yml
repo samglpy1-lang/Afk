@@ -1,4 +1,4 @@
-name: AFK Boooooy
+name: AFK Bot
 on:
   schedule:
     - cron: '*/5 * * * *'
@@ -30,6 +30,7 @@ jobs:
           const TIMEOUT = 60000;
           const RECONNECT_MIN = 5000;
           const RECONNECT_MAX = 65000;
+          const PASSWORD = 'passwordcoolio123';
           
           const timestamp = Date.now().toString().slice(-4);
           const randomNum = Math.floor(Math.random() * 9000) + 1000;
@@ -50,6 +51,8 @@ jobs:
           let lastVerificationTime = 0;
           let startTime = Date.now();
           let reconnectCount = 0;
+          let registered = false;
+          let loginAttempted = false;
           
           function handleVerificationLink(link, minutesLeft) {
             console.log('Verification link detected:', link);
@@ -128,6 +131,8 @@ jobs:
             console.log('Connection attempt #' + reconnectCount + ' as', botName, 'version:', currentVersion);
             spawned = false;
             verificationAttempted = false;
+            registered = false;
+            loginAttempted = false;
             try {
               bot = mineflayer.createBot({
                 host: '${{ secrets.SERVER_IP }}',
@@ -202,8 +207,46 @@ jobs:
                 } catch (e) {}
               }, 3000 + Math.random() * 9000);
             });
+            
+            // === CHAT HANDLER — Register/Login + Verification ===
             bot.on('messagestr', function(message) {
               try {
+                var msg = message.toLowerCase();
+                
+                // === REGISTER ===
+                if (msg.indexOf('/register') > -1 || msg.indexOf('register') > -1) {
+                  if (!registered) {
+                    console.log('Register detected! Sending /register ' + PASSWORD);
+                    bot.chat('/register ' + PASSWORD + ' ' + PASSWORD);
+                    registered = true;
+                    console.log('✅ Register command sent.');
+                  }
+                }
+                
+                // === LOGIN ===
+                if (msg.indexOf('/login') > -1 || msg.indexOf('login') > -1) {
+                  if (!loginAttempted) {
+                    console.log('Login detected! Sending /login ' + PASSWORD);
+                    bot.chat('/login ' + PASSWORD);
+                    loginAttempted = true;
+                    console.log('✅ Login command sent.');
+                  }
+                }
+                
+                // === LOGIN SUCCESS ===
+                if (msg.indexOf('successfully logged in') > -1 || msg.indexOf('logged in') > -1) {
+                  console.log('✅ Login successful!');
+                  loginAttempted = true;
+                  registered = true;
+                }
+                
+                // === REGISTER SUCCESS ===
+                if (msg.indexOf('registered') > -1 || msg.indexOf('successfully registered') > -1) {
+                  console.log('✅ Registration successful!');
+                  registered = true;
+                }
+                
+                // === VERIFICATION ===
                 var verifyRegex = /(\\d+)\\s+min\\s+left\\s+to\\s+verify!\\s+(https:\\/\\/client\\.falixnodes\\.net\\/verify\\?t=[A-Z0-9]+)/i;
                 var match = message.match(verifyRegex);
                 if (match) {
@@ -235,6 +278,7 @@ jobs:
                 console.log('Chat handler error:', e.message);
               }
             });
+            
             bot.on('error', function(err) {
               var msg = err.message || '';
               if (msg.indexOf('ECONNREFUSED') > -1 || msg.indexOf('connect') > -1) {
@@ -279,8 +323,8 @@ jobs:
           createBot();
           
           console.log('Bot is running continuously. No session limit.');
-          console.log('Will stay alive until GitHub kills the job (max 6 hours).');
-          console.log('Cron will restart it every 5 minutes if this job dies.');
+          console.log('Password: ' + PASSWORD);
+          console.log('Will auto-register and auto-login if needed.');
           
           setInterval(function() {
             var uptime = Math.round((Date.now() - startTime) / 60000);
