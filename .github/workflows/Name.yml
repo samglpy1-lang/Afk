@@ -1,0 +1,362 @@
+name: AFK Booot
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: afk-bot
+      cancel-in-progress: true
+    
+    steps:
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-js: '18'
+      
+      - name: Install mineflayer
+        run: npm install mineflayer@latest
+        
+      - name: Run AFK bot
+        run: |
+          node -e "
+          const mineflayer = require('mineflayer');
+          const https = require('https');
+          
+          const VERSIONS = ['1.20.4', '1.20.2', '1.19.4', '1.19.2', '1.18.2'];
+          const SESSION_MIN = 120000;
+          const SESSION_MAX = 840000;
+          const TIMEOUT = 60000;
+          const RECONNECT_MIN = 5000;
+          const RECONNECT_MAX = 65000;
+          
+          const timestamp = Date.now().toString().slice(-4);
+          const randomNum = Math.floor(Math.random() * 9000) + 1000;
+          const botName = 'BTT' + timestamp + randomNum;
+          console.log('Bot name:', botName);
+          
+          const sessionMs = SESSION_MIN + Math.floor(Math.random() * (SESSION_MAX - SESSION_MIN));
+          const disconnectCount = 1 + Math.floor(Math.random() * 3);
+          console.log('Session:', Math.round(sessionMs/60000), 'min,', disconnectCount, 'disconnects');
+          
+          let bot = null;
+          let active = true;
+          let spawned = false;
+          let reconnectTimer = null;
+          let isDisconnecting = false;
+          let moveInterval = null;
+          let sessionTimer = null;
+          let disconnectTimer = null;
+          let currentVersion = VERSIONS[0];
+          let versionIndex = 0;
+          let verificationAttempted = false;
+          let verificationCount = 0;
+          let lastVerificationTime = 0;
+          
+          function handleVerificationLink(link, minutesLeft) {
+            console.log('Verification link detected:', link);
+            console.log('Minutes left:', minutesLeft);
+            
+            if (verificationAttempted) {
+              console.log('Already attempted verification this session.');
+              return;
+            }
+            
+            var now = Date.now();
+            if (now - lastVerificationTime < 120000) {
+              console.log('Verification attempted recently, skipping.');
+              return;
+            }
+            
+            verificationAttempted = true;
+            verificationCount++;
+            lastVerificationTime = now;
+            console.log('Attempting verification #' + verificationCount + '...');
+            
+            try {
+              console.log('Sending GET request...');
+              var options = {
+                headers: {
+                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+                  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                  'Accept-Language': 'en-US,en;q=0.9'
+                }
+              };
+              
+              var req = https.get(link, options, function(res) {
+                console.log('Response status:', res.statusCode);
+                var data = '';
+                res.on('data', function(chunk) { data += chunk; });
+                res.on('end', function() {
+                  if (res.statusCode === 200) {
+                    console.log('GET request succeeded!');
+                    if (data.indexOf('verify') > -1 || data.indexOf('success') > -1) {
+                      console.log('Verification likely successful!');
+                    }
+                    if (data.indexOf('login') > -1 || data.indexOf('signin') > -1) {
+                      console.log('Redirected to login page - need session cookie.');
+                    }
+                  } else if (res.statusCode === 302 || res.statusCode === 301) {
+                    console.log('Redirected to:', res.headers.location);
+                  } else {
+                    console.log('Unexpected status:', res.statusCode);
+                  }
+                });
+              });
+              
+              req.on('error', function(err) {
+                console.log('GET request failed:', err.message);
+              });
+              req.setTimeout(15000, function() {
+                req.destroy();
+                console.log('GET request timed out.');
+              });
+              req.end();
+              
+            } catch (e) {
+              console.log('Error handling verification:', e.message);
+            }
+          }
+          
+          function cleanup() {
+            if (moveInterval) { clearInterval(moveInterval); moveInterval = null; }
+            if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+            if (sessionTimer) { clearTimeout(sessionTimer); sessionTimer = null; }
+            if (disconnectTimer) { clearTimeout(disconnectTimer); disconnectTimer = null; }
+            if (bot) {
+              try { bot.end(); console.log('Bot cleaned up'); } catch (e) {}
+              bot = null;
+            }
+            spawned = false;
+            isDisconnecting = false;
+          }
+          
+          function createBot() {
+            if (!active) return;
+            cleanup();
+            
+            console.log('Connecting as', botName, 'version:', currentVersion);
+            spawned = false;
+            verificationAttempted = false;
+            
+            try {
+              bot = mineflayer.createBot({
+                host: '${{ secrets.SERVER_IP }}',
+                port: 25565,
+                username: botName,
+                version: currentVersion,
+                auth: 'offline',
+                checkTimeoutInterval: TIMEOUT,
+                logErrors: true,
+                hideErrors: false
+              });
+            } catch (e) {
+              console.log('Failed to create bot:', e.message);
+              scheduleReconnect();
+              return;
+            }
+            
+            bot.on('resourcePack', function() {
+              try { bot.denyResourcePack(); console.log('Resource pack denied.'); } catch (e) {}
+            });
+            
+            bot.once('login', function() {
+              try {
+                bot._client.removeAllListeners('keep_alive');
+                bot._client.on('keep_alive', function(packet) {
+                  try { bot._client.write('keep_alive', { keepAliveId: packet.keepAliveId }); } catch (e) {}
+                });
+                console.log('Keepalive handler installed');
+              } catch (e) {}
+            });
+            
+            bot.once('spawn', function() {
+              spawned = true;
+              try {
+                if (bot && bot._client && bot._client.keepAlive) {
+                  clearInterval(bot._client.keepAlive);
+                  bot._client.keepAlive = null;
+                }
+              } catch (e) {}
+              console.log(botName, 'spawned!');
+            });
+            
+            bot.on('spawn', function() {
+              console.log(botName, 'active!');
+              if (moveInterval) { clearInterval(moveInterval); moveInterval = null; }
+              
+              moveInterval = setInterval(function() {
+                if (!active || !bot || isDisconnecting || !spawned) return;
+                if (!bot.entity || !bot.entity.id || !bot.entity.position) return;
+                
+                try {
+                  var action = Math.random();
+                  if (action < 0.15) { return; }
+                  else if (action < 0.30) {
+                    bot.setControlState('jump', true);
+                    setTimeout(function() { if (bot && spawned) bot.setControlState('jump', false); }, 150 + Math.random() * 350);
+                  } else if (action < 0.45) {
+                    bot.setControlState('forward', true);
+                    setTimeout(function() { if (bot && spawned) bot.setControlState('forward', false); }, 800 + Math.random() * 2500);
+                  } else if (action < 0.55) {
+                    bot.setControlState('back', true);
+                    setTimeout(function() { if (bot && spawned) bot.setControlState('back', false); }, 800 + Math.random() * 2000);
+                  } else if (action < 0.65) {
+                    bot.setControlState('sneak', true);
+                    setTimeout(function() { if (bot && spawned) bot.setControlState('sneak', false); }, 1200 + Math.random() * 2000);
+                  } else if (action < 0.75) {
+                    if (Math.random() > 0.5) {
+                      bot.setControlState('left', true);
+                      setTimeout(function() { if (bot && spawned) bot.setControlState('left', false); }, 400 + Math.random() * 1200);
+                    } else {
+                      bot.setControlState('right', true);
+                      setTimeout(function() { if (bot && spawned) bot.setControlState('right', false); }, 400 + Math.random() * 1200);
+                    }
+                  } else {
+                    bot.look(Math.random() * Math.PI * 2, (Math.random() - 0.5) * 0.6);
+                  }
+                } catch (e) {}
+              }, 3000 + Math.random() * 9000);
+            });
+            
+            bot.on('messagestr', function(message) {
+              try {
+                var verifyRegex = /(\\d+)\\s+min\\s+left\\s+to\\s+verify!\\s+(https:\\/\\/client\\.falixnodes\\.net\\/verify\\?t=[A-Z0-9]+)/i;
+                var match = message.match(verifyRegex);
+                
+                if (match) {
+                  var minutesLeft = parseInt(match[1], 10);
+                  var verifyUrl = match[2];
+                  console.log('Verification required in ' + minutesLeft + ' minutes!');
+                  console.log('Link:', verifyUrl);
+                  
+                  if (minutesLeft <= 10) {
+                    handleVerificationLink(verifyUrl, minutesLeft);
+                  } else {
+                    console.log('More than 10 minutes left, waiting...');
+                  }
+                }
+                
+                if (message.indexOf('Click to verify') > -1 && message.indexOf('client.falixnodes.net/verify') > -1) {
+                  var urlMatch = message.match(/https:\\/\\/client\\.falixnodes\\.net\\/verify\\?t=[A-Z0-9]+/i);
+                  if (urlMatch) {
+                    console.log('Click-to-verify link detected:', urlMatch[0]);
+                    handleVerificationLink(urlMatch[0], 'unknown');
+                  }
+                }
+                
+                if (message.indexOf('client.falixnodes.net/verify') > -1) {
+                  var fallbackMatch = message.match(/https:\\/\\/client\\.falixnodes\\.net\\/verify\\?t=[A-Z0-9]+/i);
+                  if (fallbackMatch && message.indexOf('min left') === -1 && message.indexOf('Click') === -1) {
+                    console.log('Fallback link detected:', fallbackMatch[0]);
+                    handleVerificationLink(fallbackMatch[0], 'unknown');
+                  }
+                }
+              } catch (e) {
+                console.log('Chat handler error:', e.message);
+              }
+            });
+            
+            bot.on('error', function(err) {
+              var msg = err.message || '';
+              if (msg.indexOf('ECONNREFUSED') > -1 || msg.indexOf('connect') > -1) {
+                console.log('Server offline - will retry');
+              } else if (msg.indexOf('timeout') > -1 || msg.indexOf('Timed out') > -1) {
+                console.log('Connection timeout - retrying');
+              } else if (msg.indexOf('Invalid version') > -1 || msg.indexOf('protocol') > -1) {
+                console.log('Version mismatch, trying next...');
+                versionIndex++;
+                if (versionIndex < VERSIONS.length) {
+                  currentVersion = VERSIONS[versionIndex];
+                  console.log('Trying version:', currentVersion);
+                  scheduleReconnect();
+                } else {
+                  console.log('All versions failed. Giving up.');
+                  active = false;
+                }
+              } else if (msg.indexOf('ECONNRESET') === -1 && msg.indexOf('abort') === -1) {
+                console.log('Error:', msg);
+              }
+            });
+            
+            bot.on('end', function(reason) {
+              console.log(botName, 'disconnected:', reason || 'unknown');
+              spawned = false;
+              if (moveInterval) { clearInterval(moveInterval); moveInterval = null; }
+              if (active && !reconnectTimer && !isDisconnecting) {
+                scheduleReconnect();
+              }
+            });
+          }
+          
+          function scheduleReconnect() {
+            if (!active || reconnectTimer) return;
+            var delay = RECONNECT_MIN + Math.random() * (RECONNECT_MAX - RECONNECT_MIN);
+            console.log('Reconnecting in', Math.round(delay/1000), 's...');
+            reconnectTimer = setTimeout(function() {
+              reconnectTimer = null;
+              if (active) createBot();
+            }, delay);
+          }
+          
+          var disconnectionsDone = 0;
+          
+          function scheduleRandomDisconnect() {
+            if (!active || disconnectionsDone >= disconnectCount) return;
+            if (disconnectTimer) { clearTimeout(disconnectTimer); disconnectTimer = null; }
+            var waitMs = SESSION_MIN + Math.floor(Math.random() * (SESSION_MAX - SESSION_MIN));
+            console.log('Next random disconnect in', Math.round(waitMs/60000), 'min');
+            disconnectTimer = setTimeout(function() {
+              disconnectTimer = null;
+              if (!active || !bot || disconnectionsDone >= disconnectCount || isDisconnecting) {
+                scheduleRandomDisconnect();
+                return;
+              }
+              if (Math.random() < 0.70) {
+                disconnectionsDone++;
+                isDisconnecting = true;
+                console.log('Random disconnect (' + disconnectionsDone + '/' + disconnectCount + ')');
+                spawned = false;
+                try { if (bot) { bot.end(); bot = null; } } catch (e) {}
+                var reconnectDelay = RECONNECT_MIN + Math.random() * (RECONNECT_MAX - RECONNECT_MIN);
+                console.log('Reconnecting in', Math.round(reconnectDelay/1000), 's...');
+                reconnectTimer = setTimeout(function() {
+                  reconnectTimer = null;
+                  isDisconnecting = false;
+                  if (active) createBot();
+                }, reconnectDelay);
+              } else {
+                console.log('Skipped random disconnect.');
+              }
+              scheduleRandomDisconnect();
+            }, waitMs);
+          }
+          
+          createBot();
+          scheduleRandomDisconnect();
+          
+          sessionTimer = setTimeout(function() {
+            console.log('Session ending. Shutting down...');
+            console.log('Verification attempts:', verificationCount);
+            active = false;
+            cleanup();
+            process.exit(0);
+          }, sessionMs);
+          
+          process.on('SIGINT', function() {
+            console.log('Received SIGINT. Shutting down...');
+            active = false;
+            cleanup();
+            process.exit(0);
+          });
+          
+          process.on('SIGTERM', function() {
+            console.log('Received SIGTERM. Shutting down...');
+            active = false;
+            cleanup();
+            process.exit(0);
+          });
+          "
