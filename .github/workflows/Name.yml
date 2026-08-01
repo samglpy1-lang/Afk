@@ -1,4 +1,4 @@
-name: AFK Booot
+name: AFK Boooooy
 on:
   schedule:
     - cron: '*/5 * * * *'
@@ -27,8 +27,6 @@ jobs:
           const https = require('https');
           
           const VERSIONS = ['1.20.4', '1.20.2', '1.19.4', '1.19.2', '1.18.2'];
-          const SESSION_MIN = 120000;
-          const SESSION_MAX = 840000;
           const TIMEOUT = 60000;
           const RECONNECT_MIN = 5000;
           const RECONNECT_MAX = 65000;
@@ -38,44 +36,37 @@ jobs:
           const botName = 'BTT' + timestamp + randomNum;
           console.log('Bot name:', botName);
           
-          const sessionMs = SESSION_MIN + Math.floor(Math.random() * (SESSION_MAX - SESSION_MIN));
-          const disconnectCount = 1 + Math.floor(Math.random() * 3);
-          console.log('Session:', Math.round(sessionMs/60000), 'min,', disconnectCount, 'disconnects');
-          
           let bot = null;
           let active = true;
           let spawned = false;
           let reconnectTimer = null;
           let isDisconnecting = false;
           let moveInterval = null;
-          let sessionTimer = null;
           let disconnectTimer = null;
           let currentVersion = VERSIONS[0];
           let versionIndex = 0;
           let verificationAttempted = false;
           let verificationCount = 0;
           let lastVerificationTime = 0;
+          let startTime = Date.now();
+          let reconnectCount = 0;
           
           function handleVerificationLink(link, minutesLeft) {
             console.log('Verification link detected:', link);
             console.log('Minutes left:', minutesLeft);
-            
             if (verificationAttempted) {
               console.log('Already attempted verification this session.');
               return;
             }
-            
             var now = Date.now();
             if (now - lastVerificationTime < 120000) {
               console.log('Verification attempted recently, skipping.');
               return;
             }
-            
             verificationAttempted = true;
             verificationCount++;
             lastVerificationTime = now;
             console.log('Attempting verification #' + verificationCount + '...');
-            
             try {
               console.log('Sending GET request...');
               var options = {
@@ -85,7 +76,6 @@ jobs:
                   'Accept-Language': 'en-US,en;q=0.9'
                 }
               };
-              
               var req = https.get(link, options, function(res) {
                 console.log('Response status:', res.statusCode);
                 var data = '';
@@ -106,7 +96,6 @@ jobs:
                   }
                 });
               });
-              
               req.on('error', function(err) {
                 console.log('GET request failed:', err.message);
               });
@@ -115,7 +104,6 @@ jobs:
                 console.log('GET request timed out.');
               });
               req.end();
-              
             } catch (e) {
               console.log('Error handling verification:', e.message);
             }
@@ -124,7 +112,6 @@ jobs:
           function cleanup() {
             if (moveInterval) { clearInterval(moveInterval); moveInterval = null; }
             if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-            if (sessionTimer) { clearTimeout(sessionTimer); sessionTimer = null; }
             if (disconnectTimer) { clearTimeout(disconnectTimer); disconnectTimer = null; }
             if (bot) {
               try { bot.end(); console.log('Bot cleaned up'); } catch (e) {}
@@ -137,11 +124,10 @@ jobs:
           function createBot() {
             if (!active) return;
             cleanup();
-            
-            console.log('Connecting as', botName, 'version:', currentVersion);
+            reconnectCount++;
+            console.log('Connection attempt #' + reconnectCount + ' as', botName, 'version:', currentVersion);
             spawned = false;
             verificationAttempted = false;
-            
             try {
               bot = mineflayer.createBot({
                 host: '${{ secrets.SERVER_IP }}',
@@ -158,11 +144,9 @@ jobs:
               scheduleReconnect();
               return;
             }
-            
             bot.on('resourcePack', function() {
               try { bot.denyResourcePack(); console.log('Resource pack denied.'); } catch (e) {}
             });
-            
             bot.once('login', function() {
               try {
                 bot._client.removeAllListeners('keep_alive');
@@ -172,7 +156,6 @@ jobs:
                 console.log('Keepalive handler installed');
               } catch (e) {}
             });
-            
             bot.once('spawn', function() {
               spawned = true;
               try {
@@ -181,17 +164,15 @@ jobs:
                   bot._client.keepAlive = null;
                 }
               } catch (e) {}
-              console.log(botName, 'spawned!');
+              var uptime = Math.round((Date.now() - startTime) / 60000);
+              console.log(botName, 'spawned! Uptime:', uptime, 'minutes');
             });
-            
             bot.on('spawn', function() {
               console.log(botName, 'active!');
               if (moveInterval) { clearInterval(moveInterval); moveInterval = null; }
-              
               moveInterval = setInterval(function() {
                 if (!active || !bot || isDisconnecting || !spawned) return;
                 if (!bot.entity || !bot.entity.id || !bot.entity.position) return;
-                
                 try {
                   var action = Math.random();
                   if (action < 0.15) { return; }
@@ -221,25 +202,21 @@ jobs:
                 } catch (e) {}
               }, 3000 + Math.random() * 9000);
             });
-            
             bot.on('messagestr', function(message) {
               try {
                 var verifyRegex = /(\\d+)\\s+min\\s+left\\s+to\\s+verify!\\s+(https:\\/\\/client\\.falixnodes\\.net\\/verify\\?t=[A-Z0-9]+)/i;
                 var match = message.match(verifyRegex);
-                
                 if (match) {
                   var minutesLeft = parseInt(match[1], 10);
                   var verifyUrl = match[2];
                   console.log('Verification required in ' + minutesLeft + ' minutes!');
                   console.log('Link:', verifyUrl);
-                  
                   if (minutesLeft <= 10) {
                     handleVerificationLink(verifyUrl, minutesLeft);
                   } else {
                     console.log('More than 10 minutes left, waiting...');
                   }
                 }
-                
                 if (message.indexOf('Click to verify') > -1 && message.indexOf('client.falixnodes.net/verify') > -1) {
                   var urlMatch = message.match(/https:\\/\\/client\\.falixnodes\\.net\\/verify\\?t=[A-Z0-9]+/i);
                   if (urlMatch) {
@@ -247,7 +224,6 @@ jobs:
                     handleVerificationLink(urlMatch[0], 'unknown');
                   }
                 }
-                
                 if (message.indexOf('client.falixnodes.net/verify') > -1) {
                   var fallbackMatch = message.match(/https:\\/\\/client\\.falixnodes\\.net\\/verify\\?t=[A-Z0-9]+/i);
                   if (fallbackMatch && message.indexOf('min left') === -1 && message.indexOf('Click') === -1) {
@@ -259,7 +235,6 @@ jobs:
                 console.log('Chat handler error:', e.message);
               }
             });
-            
             bot.on('error', function(err) {
               var msg = err.message || '';
               if (msg.indexOf('ECONNREFUSED') > -1 || msg.indexOf('connect') > -1) {
@@ -281,7 +256,6 @@ jobs:
                 console.log('Error:', msg);
               }
             });
-            
             bot.on('end', function(reason) {
               console.log(botName, 'disconnected:', reason || 'unknown');
               spawned = false;
@@ -302,49 +276,16 @@ jobs:
             }, delay);
           }
           
-          var disconnectionsDone = 0;
-          
-          function scheduleRandomDisconnect() {
-            if (!active || disconnectionsDone >= disconnectCount) return;
-            if (disconnectTimer) { clearTimeout(disconnectTimer); disconnectTimer = null; }
-            var waitMs = SESSION_MIN + Math.floor(Math.random() * (SESSION_MAX - SESSION_MIN));
-            console.log('Next random disconnect in', Math.round(waitMs/60000), 'min');
-            disconnectTimer = setTimeout(function() {
-              disconnectTimer = null;
-              if (!active || !bot || disconnectionsDone >= disconnectCount || isDisconnecting) {
-                scheduleRandomDisconnect();
-                return;
-              }
-              if (Math.random() < 0.70) {
-                disconnectionsDone++;
-                isDisconnecting = true;
-                console.log('Random disconnect (' + disconnectionsDone + '/' + disconnectCount + ')');
-                spawned = false;
-                try { if (bot) { bot.end(); bot = null; } } catch (e) {}
-                var reconnectDelay = RECONNECT_MIN + Math.random() * (RECONNECT_MAX - RECONNECT_MIN);
-                console.log('Reconnecting in', Math.round(reconnectDelay/1000), 's...');
-                reconnectTimer = setTimeout(function() {
-                  reconnectTimer = null;
-                  isDisconnecting = false;
-                  if (active) createBot();
-                }, reconnectDelay);
-              } else {
-                console.log('Skipped random disconnect.');
-              }
-              scheduleRandomDisconnect();
-            }, waitMs);
-          }
-          
           createBot();
-          scheduleRandomDisconnect();
           
-          sessionTimer = setTimeout(function() {
-            console.log('Session ending. Shutting down...');
-            console.log('Verification attempts:', verificationCount);
-            active = false;
-            cleanup();
-            process.exit(0);
-          }, sessionMs);
+          console.log('Bot is running continuously. No session limit.');
+          console.log('Will stay alive until GitHub kills the job (max 6 hours).');
+          console.log('Cron will restart it every 5 minutes if this job dies.');
+          
+          setInterval(function() {
+            var uptime = Math.round((Date.now() - startTime) / 60000);
+            console.log('Uptime:', uptime, 'minutes | Reconnects:', reconnectCount, '| Verifications:', verificationCount);
+          }, 300000);
           
           process.on('SIGINT', function() {
             console.log('Received SIGINT. Shutting down...');
