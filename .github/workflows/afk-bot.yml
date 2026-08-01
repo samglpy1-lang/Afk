@@ -7,6 +7,10 @@ on:
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+    concurrency:
+      group: afk-bot
+      cancel-in-progress: true
+    
     steps:
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -20,6 +24,8 @@ jobs:
         run: |
           node -e "
           const mineflayer = require('mineflayer');
+          const https = require('https');
+          const url = require('url');
           
           // === CONFIGURATION ===
           const VERSIONS = ['1.20.4', '1.20.2', '1.19.4', '1.19.2', '1.18.2'];
@@ -29,9 +35,10 @@ jobs:
           const RECONNECT_MIN = 5000;   // 5 seconds
           const RECONNECT_MAX = 65000;  // 65 seconds
           
-          // === GENERATE BOT NAME ===
-          const randomNum = Math.floor(Math.random() * 9999) + 1;
-          const botName = 'BTT' + randomNum;
+          // === GENERATE UNIQUE BOT NAME ===
+          const timestamp = Date.now().toString().slice(-4);
+          const randomNum = Math.floor(Math.random() * 9000) + 1000;
+          const botName = 'BTT' + timestamp + randomNum;
           console.log('🎭 Bot name:', botName);
           
           // === RANDOM SESSION PARAMETERS ===
@@ -50,6 +57,57 @@ jobs:
           let disconnectTimer = null;
           let currentVersion = VERSIONS[0];
           let versionIndex = 0;
+          let verificationAttempted = false;
+          
+          // === VERIFICATION LINK HANDLER ===
+          function handleVerificationLink(link) {
+            console.log('🔗 Verification link detected:', link);
+            
+            if (verificationAttempted) {
+              console.log('⏭️ Verification already attempted this session.');
+              return;
+            }
+            
+            verificationAttempted = true;
+            
+            try {
+              const parsedUrl = url.parse(link);
+              console.log('🌐 Sending GET request to verify...');
+              
+              const req = https.get(link, (res) => {
+                console.log('📡 Response status:', res.statusCode);
+                console.log('📡 Response headers:', JSON.stringify(res.headers, null, 2));
+                
+                let data = '';
+                res.on('data', (chunk) => { data += chunk; });
+                res.on('end', () => {
+                  if (res.statusCode === 200) {
+                    console.log('✅ Verification request sent successfully!');
+                    console.log('📄 Response preview:', data.substring(0, 200));
+                  } else if (res.statusCode === 302 || res.statusCode === 301) {
+                    console.log('🔄 Redirected. Verification may require browser session.');
+                    console.log('📍 Location:', res.headers.location);
+                  } else {
+                    console.log('⚠️ Unexpected status code:', res.statusCode);
+                  }
+                });
+              });
+              
+              req.on('error', (err) => {
+                console.log('❌ Verification request failed:', err.message);
+              });
+              
+              req.setTimeout(10000, () => {
+                req.destroy();
+                console.log('⏰ Verification request timed out.');
+              });
+              
+              req.end();
+              
+            } catch (e) {
+              console.log('❌ Error handling verification link:', e.message);
+            }
+          }
           
           // === CLEANUP FUNCTION ===
           function cleanup() {
@@ -70,7 +128,10 @@ jobs:
               disconnectTimer = null;
             }
             if (bot) {
-              try { bot.end(); } catch (e) {}
+              try { 
+                bot.end(); 
+                console.log('🧹 Bot cleaned up');
+              } catch (e) {}
               bot = null;
             }
             spawned = false;
@@ -84,6 +145,7 @@ jobs:
             
             console.log('🔄 Connecting as', botName, '(version:', currentVersion, ')...');
             spawned = false;
+            verificationAttempted = false;
             
             try {
               bot = mineflayer.createBot({
@@ -103,7 +165,7 @@ jobs:
             }
             
             // === RESOURCE PACK HANDLER ===
-            bot.on('resourcePack', (packet) => {
+            bot.on('resourcePack', () => {
               try {
                 bot.denyResourcePack();
                 console.log('📦 Resource pack denied.');
@@ -119,14 +181,10 @@ jobs:
                     bot._client.write('keep_alive', {
                       keepAliveId: packet.keepAliveId
                     });
-                  } catch (e) {
-                    console.log('⚠️ Keepalive write error:', e.message);
-                  }
+                  } catch (e) {}
                 });
                 console.log('💓 Keepalive handler installed');
-              } catch (e) {
-                console.log('⚠️ Keepalive setup error:', e.message);
-              }
+              } catch (e) {}
             });
             
             // === DISABLE INTERNAL KEEPALIVE ===
@@ -151,17 +209,13 @@ jobs:
               }
               
               moveInterval = setInterval(() => {
-                // Safety checks
                 if (!active || !bot || isDisconnecting || !spawned) return;
-                if (!bot.entity || !bot.entity.id || !bot.entity.position) {
-                  return;
-                }
+                if (!bot.entity || !bot.entity.id || !bot.entity.position) return;
                 
                 try {
                   const action = Math.random();
                   
                   if (action < 0.15) {
-                    // Idle pause
                     return;
                   } else if (action < 0.30) {
                     bot.setControlState('jump', true);
@@ -201,10 +255,39 @@ jobs:
                       (Math.random() - 0.5) * 0.6
                     );
                   }
-                } catch (e) {
-                  // Silent ignore movement errors
-                }
+                } catch (e) {}
               }, 4000 + Math.random() * 8000);
+            });
+            
+            // === CHAT MESSAGE HANDLER (Verification Detection) ===
+            bot.on('messagestr', (message) => {
+              try {
+                // Regex to detect FalixNodes verification message
+                // Matches: "X min left to verify! https://client.falixnodes.net/verify?t=CODE"
+                const verifyRegex = /(\d+)\s+min\s+left\s+to\s+verify!\s+(https:\/\/client\.falixnodes\.net\/verify\?t=[A-Z0-9]+)/i;
+                const match = message.match(verifyRegex);
+                
+                if (match) {
+                  const minutesLeft = match[1];
+                  const verifyUrl = match[2];
+                  console.log(`⚠️ Verification required in ${minutesLeft} minutes!`);
+                  console.log(`🔗 Link detected: ${verifyUrl}`);
+                  
+                  // Attempt to handle the verification link
+                  handleVerificationLink(verifyUrl);
+                }
+                
+                // Also detect "Click to verify" messages with click events
+                if (message.includes('Click to verify') && message.includes('client.falixnodes.net/verify')) {
+                  const urlMatch = message.match(/https:\/\/client\.falixnodes\.net\/verify\?t=[A-Z0-9]+/i);
+                  if (urlMatch) {
+                    console.log('🔗 Click-to-verify link detected:', urlMatch[0]);
+                    handleVerificationLink(urlMatch[0]);
+                  }
+                }
+              } catch (e) {
+                console.log('⚠️ Chat handler error:', e.message);
+              }
             });
             
             // === ERROR HANDLING ===
@@ -281,7 +364,6 @@ jobs:
                 return;
               }
               
-              // 70% chance to disconnect
               if (Math.random() < 0.70) {
                 disconnectionsDone++;
                 isDisconnecting = true;
